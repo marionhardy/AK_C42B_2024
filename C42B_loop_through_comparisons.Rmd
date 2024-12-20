@@ -1,0 +1,350 @@
+---
+title: "C42B cells mono and bi-therapies : bulkRNAseq summary"
+author: "Marion Hardy"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true 
+    theme: spacelab 
+    highlight: monochrome
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, cache = TRUE, echo = FALSE, warning = F, cache.lazy = F)
+knitr::opts_chunk$set(fig.width=10, fig.height=7) 
+
+library(RColorBrewer)
+library(tidyverse)
+library(DESeq2)
+library(cowplot)
+library(biomaRt)
+library(ggrepel)
+library(pheatmap)
+library(ComplexHeatmap)
+library(xlsx)
+library(msigdbr)
+library(clusterProfiler)
+
+ensembl_to_geneName <- readRDS("./data/hsapiens_annotations_230510.rds") %>% 
+  filter(!duplicated(gene, drop = F))
+
+dir = getwd()
+
+```
+
+# Introduction
+
+BulkRNAseq analysis of C42B cells treated with mono or bi-therapies.
+
+This report will present a broad overview of how similar/different
+samples are in terms of gene expression. The objective is to help AK
+narrow down which gene sets are of interest and follow this with a gsea
+analysis and a closer look at the function of these identified gene
+groups.
+
+Each sample comparison shown in this report will have additional files
+generated:
+
+-   res_tbl.csv = all differentially expressed genes, annotated (no
+    filtering)
+
+-   Sign_genes.xlsx = excel doc with all significantly up- and
+    down-regulated genes (log2Fc \>= 1), annotated and sorted into all
+    genes, only up and only down on different sheets.
+
+-   volcano plot of all genes (html format)
+
+NB: Data quality has been checked within the previous script "DESeq2.R",
+everything looked good.
+
+```{r}
+
+dds = readRDS("./data_output/C42B_DESeq_comp_to_DMSO.Rds")
+ddsao = readRDS("./data_output/C42B_DESeq_comp_to_AbiOla.Rds")
+ddseo = readRDS("./data_output/C42B_DESeq_comp_to_EnzOla.Rds")
+
+```
+
+# PCA
+
+```{r, fig.height=5, fig.width=6}
+rld = vst(dds)
+
+plotPCA(rld,intgroup="Treatment") + 
+  geom_label_repel(aes(label = Treatment), 
+                   size = 3, box.padding = 0.6,
+                   max.overlaps = Inf)+
+  xlim(c(-25,20))+
+  ylim(c(-15, 15))+
+  theme_bw()+
+  labs(title = 'PCA per treatment')
+```
+
+# Every treatment compared to DMSO
+
+## Volcano plots
+
+```{r, fig.show="hold", out.width="33%"}
+
+for (i in 2:7){
+    cond = resultsNames(dds)[i]
+    name = gsub("Treatment_","",resultsNames(dds)[i])
+    
+    res <- results(dds, name = cond)
+    res_tbl <- as_tibble(res, rownames="ensembl")
+    res_tbl <- res_tbl %>%
+    left_join(ensembl_to_geneName) %>%
+    arrange(padj) 
+    dir.create(paste0(dir,'/data_output/',name))
+    dir.create(paste0(dir,'/figures/',name))
+    write.csv(res_tbl, paste0("./data_output/",name,"/res_tbl.csv"), row.names = T)
+    
+    overexpr <- res_tbl %>% filter(padj<=0.05 & log2FoldChange>=1) 
+    underexpr <- res_tbl %>% filter(padj<=0.05 & log2FoldChange<=-1)
+    signif <- full_join(overexpr, underexpr)
+  
+    write.xlsx(overexpr, file= paste0("./data_output/",name,"/Sign_genes.xlsx"), sheetName="UP")
+    write.xlsx(underexpr, file=paste0("./data_output/",name,"/Sign_genes.xlsx"), sheetName="DOWN", append=TRUE)
+    write.xlsx(signif, file=paste0("./data_output/",name,"/Sign_genes.xlsx"), sheetName="SIGNIF", append=TRUE)
+    
+    p1 =
+  res_tbl %>%
+    filter(!is.na(padj)) %>%
+    ggplot(aes(x = log2FoldChange, y = -log10(padj),
+               color = padj < 0.05 & abs(log2FoldChange) > 1, 
+               label = ifelse(padj<0.05&log2FoldChange>=1|
+                                padj<0.05&log2FoldChange<=-1,as.character(gene),''))) +
+    scale_colour_manual(values = c("gray", "firebrick3")) +
+    labs(col="Significantly expressed")+
+    geom_point(size = 0.5) +
+    geom_hline(yintercept = -log10(0.05)) +
+    geom_vline(xintercept = 1) +
+    geom_vline(xintercept = -1)+
+    geom_text_repel(max.overlaps = 15,
+                    box.padding = 0.25,
+                    segment.color = 'grey50',
+                    fontface = "italic")+
+    labs(title = name)+
+    theme_bw()
+  
+  print(p1)
+  
+    ggsave(paste0("./figures/",name,"/volcanoplot.svg"), last_plot(), 
+           dpi= 500, width = 12, height = 8)
+  
+}
+
+```
+
+# Abi and Ola vs Ola+Abi
+
+## Volcano plots
+
+```{r, fig.show="hold", out.width="50%"}
+
+for (i in c(3,6)){
+    cond = resultsNames(ddsao)[i]
+    name = gsub("Treatment_","",resultsNames(ddsao)[i])
+    
+    res <- results(ddsao, name = cond)
+    res_tbl <- as_tibble(res, rownames="ensembl")
+    res_tbl <- res_tbl %>%
+    left_join(ensembl_to_geneName) %>%
+    arrange(padj) 
+    dir.create(paste0(dir,'/data_output/',name))
+    dir.create(paste0(dir,'/figures/',name))
+    write.csv(res_tbl, paste0("./data_output/",name,"/res_tbl.csv"), row.names = T)
+    overexpr <- res_tbl %>% filter(padj<=0.05 & log2FoldChange>=1) 
+    underexpr <- res_tbl %>% filter(padj<=0.05 & log2FoldChange<=-1)
+    signif <- full_join(overexpr, underexpr)
+  
+    write.xlsx(overexpr, file= paste0("./data_output/",name,"/Sign_genes.xlsx"), sheetName="UP")
+    write.xlsx(underexpr, file=paste0("./data_output/",name,"/Sign_genes.xlsx"), sheetName="DOWN", append=TRUE)
+    write.xlsx(signif, file=paste0("./data_output/",name,"/Sign_genes.xlsx"), sheetName="SIGNIF", append=TRUE)
+    
+    p1 =
+  res_tbl %>%
+    filter(!is.na(padj)) %>%
+    ggplot(aes(x = log2FoldChange, y = -log10(padj),
+               color = padj < 0.05 & abs(log2FoldChange) > 1, 
+               label = ifelse(padj<0.05&log2FoldChange>=1|
+                                padj<0.05&log2FoldChange<=-1,as.character(gene),''))) +
+    scale_colour_manual(values = c("gray", "firebrick3")) +
+    labs(col="Significantly expressed")+
+    geom_point(size = 0.5) +
+    geom_hline(yintercept = -log10(0.05)) +
+    geom_vline(xintercept = 1) +
+    geom_vline(xintercept = -1)+
+    geom_text_repel(max.overlaps = 15,
+                    box.padding = 0.25,
+                    segment.color = 'grey50',
+                    fontface = "italic")+
+    labs(title = name)+
+    theme_bw()
+  
+  print(p1)
+  
+    ggsave(paste0("./figures/",name,"/volcanoplot.svg"), last_plot(), 
+           dpi= 500, width = 12, height = 8)
+  
+    
+}
+
+
+```
+
+# Enz and Ola vs Ola+Abi
+
+## Volcano plots
+
+```{r, fig.show="hold", out.width="50%"}
+
+for (i in c(5,6)){
+    cond = resultsNames(ddseo)[i]
+    name = gsub("Treatment_","",resultsNames(ddseo)[i])
+    
+    res <- results(ddseo, name = cond)
+    res_tbl <- as_tibble(res, rownames="ensembl")
+    res_tbl <- res_tbl %>%
+    left_join(ensembl_to_geneName) %>%
+    arrange(padj) 
+    dir.create(paste0(dir,'/data_output/',name))
+    dir.create(paste0(dir,'/figures/',name))
+    write.csv(res_tbl, paste0("./data_output/",name,"/res_tbl.csv"), row.names = T)
+    overexpr <- res_tbl %>% filter(padj<=0.05 & log2FoldChange>=1) 
+    underexpr <- res_tbl %>% filter(padj<=0.05 & log2FoldChange<=-1)
+    signif <- full_join(overexpr, underexpr)
+  
+    write.xlsx(overexpr, file= paste0("./data_output/",name,"/Sign_genes.xlsx"), sheetName="UP")
+    write.xlsx(underexpr, file=paste0("./data_output/",name,"/Sign_genes.xlsx"), sheetName="DOWN", append=TRUE)
+    write.xlsx(signif, file=paste0("./data_output/",name,"/Sign_genes.xlsx"), sheetName="SIGNIF", append=TRUE)
+    
+    p1 =
+  res_tbl %>%
+    filter(!is.na(padj)) %>%
+    ggplot(aes(x = log2FoldChange, y = -log10(padj),
+               color = padj < 0.05 & abs(log2FoldChange) > 1, 
+               label = ifelse(padj<0.05&log2FoldChange>=1|
+                                padj<0.05&log2FoldChange<=-1,as.character(gene),''))) +
+    scale_colour_manual(values = c("gray", "firebrick3")) +
+    labs(col="Significantly expressed")+
+    geom_point(size = 0.5) +
+    geom_hline(yintercept = -log10(0.05)) +
+    geom_vline(xintercept = 1) +
+    geom_vline(xintercept = -1)+
+    geom_text_repel(max.overlaps = 15,
+                    box.padding = 0.25,
+                    segment.color = 'grey50',
+                    fontface = "italic")+
+    labs(title = name)+
+    theme_bw()
+  
+  print(p1)
+  
+    ggsave(paste0("./figures/",name,"/volcanoplot.svg"), last_plot(), 
+           dpi= 500, width = 12, height = 8)
+  
+}
+
+
+```
+
+# Venn diagram on steroids (UpsetPlot)
+
+Conditions we want to compare:
+
+-   Treatment_Abi_5_vs_DMSO
+
+-   Treatment_Enz_20_vs_DMSO
+
+-   Treatment_Ola_1_vs_DMSO
+
+-   Treatment_Tala_10_vs_DMSO
+
+-   Treatment_Abi_Ola_vs_DMSO
+
+-   Treatment_Enz_Ola_vs_DMSO
+
+-   Treatment_Ola_1_vs_Abi_Ola
+
+-   Treatment_Abi_5_vs_Abi_Ola
+
+-   Treatment_Enz_20_vs_Enz_Ola
+
+-   Treatment_Ola_1_vs_Enz_Ola
+
+I extracted all significantly differentially expressed genes (DEGs) for
+each condition (\|log2Fc\| \>= 1 and pval \< 0.05).
+
+**Set size** = how many DEGs there are per sample
+
+**Intersection size** = How many genes are shared between the x samples
+tied together with the bar + nodes
+
+So if you sum up all the intersection size with a dot in a sample, you
+get the set size of that sample. It's essentially a venn diagram for
+when you have \>3 samples you want to compare.
+
+```{r, fig.height=5, fig.width=10}
+
+# load in the data to be formatted for an upset plot
+# keep each gene name that has a signif pval and |log2fc| > 0.5
+# use ensembl to encompass unnamed transcripts
+
+folder = c("Abi_5_vs_DMSO","Enz_20_vs_DMSO","Ola_1_vs_DMSO","Tala_10_vs_DMSO",
+           "Abi_Ola_vs_DMSO","Enz_Ola_vs_DMSO","Ola_1_vs_Abi_Ola",
+           "Abi_5_vs_Abi_Ola","Enz_20_vs_Enz_Ola","Ola_1_vs_Enz_Ola")
+
+for(i in 1:length(folder)){
+  res = read.csv(paste0("./data_output/",folder[i],"/res_tbl.csv"))
+  genes = res %>% 
+    select(ensembl, log2FoldChange, padj) %>% 
+    filter(abs(log2FoldChange)>= 0.5 & padj < 0.05) %>% 
+    select(ensembl)
+  genes$temp = 1
+  colnames(genes)[2] = folder[i]
+  assign(folder[i], genes)
+}
+
+datalist_dmso = list(Abi_5_vs_DMSO, Enz_20_vs_DMSO, Ola_1_vs_DMSO, Tala_10_vs_DMSO,Abi_Ola_vs_DMSO , Enz_Ola_vs_DMSO )
+
+datalist_bith = list(Ola_1_vs_Abi_Ola, 
+             Abi_5_vs_Abi_Ola, Enz_20_vs_Enz_Ola, Ola_1_vs_Enz_Ola)
+
+big_data_dmso =
+  datalist_dmso %>% purrr::reduce(full_join, by='ensembl')%>% 
+  mutate(across(where(is.numeric), ~ replace_na(.x, 0))) 
+
+big_data_bith =
+  datalist_bith %>% purrr::reduce(full_join, by='ensembl')%>% 
+  mutate(across(where(is.numeric), ~ replace_na(.x, 0))) 
+
+```
+
+```{r, fig.height=4, fig.width=10}
+
+m1 = make_comb_mat(big_data_dmso)
+
+UpSet(m1, top_annotation = upset_top_annotation(m1, add_numbers = TRUE),
+    right_annotation = upset_right_annotation(m1, add_numbers = TRUE),
+    comb_order = order(-comb_size(m1)), 
+    comb_col = c("#ffbe4f", "#e8702a", "#6bd2db","#7e073d","#0c457d","black")[comb_degree(m1)])
+grid.text("All treatments vs DMSO: Gene overlap",x = 0.5, y=0.95, gp=gpar(fontsize=15))
+
+```
+
+```{r, fig.height=4, fig.width=10}
+
+m2 = make_comb_mat(big_data_bith)
+
+UpSet(m2, top_annotation = upset_top_annotation(m2, add_numbers = TRUE),
+    right_annotation = upset_right_annotation(m2, add_numbers = TRUE),
+    comb_order = order(-comb_size(m2)), 
+    comb_col = c("#ffbe4f", "#e8702a", "#6bd2db","#7e073d")[comb_degree(m2)])
+grid.text("Mono- vs bi-therapies: Gene overlap",x = 0.5, y=0.95, gp=gpar(fontsize=15))
+
+```
